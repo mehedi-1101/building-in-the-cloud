@@ -15,7 +15,7 @@ resource "aws_lb_target_group" "web" {
   vpc_id   = aws_vpc.main.id
 
   health_check {
-    path                = "/"
+    path                = "/health"
     matcher             = "200"
     healthy_threshold   = 2
     unhealthy_threshold = 3
