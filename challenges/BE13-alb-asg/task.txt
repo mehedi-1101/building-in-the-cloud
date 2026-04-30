@@ -1,0 +1,38 @@
+--- PAGE 1 ---
+Build Challenge
+API Gateway → ALB → ASG with 2 EC2 web servers
+--- PAGE 2 ---
+Target Architecture
+A curl to the public endpoint must return HTTP 200 with the EC2 instance ID.
+Auto Scaling Group · desired=2
+EC2 — instance 1
+Web server installed via user data
+launch template
+User HTTP API Gateway port 80 ALB
+curl / browser
+EC2 — instance 2
+Web server installed via user data
+launch template
+--- PAGE 3 ---
+Constraints & Pass Criteria
+CONSTRAINTS PASS CRITERIA
+API type HTTP API curl returns HTTP 200
+ALB port 80 (HTTP) Response body contains EC2 instance ID
+EC2 count desired = 2 Both instances show healthy in target group
+Web server installed via user data Refreshing URL shows different instance IDs
+Launch config launch template Terminating one EC2 triggers ASG replacement
+Health check ELB health checks should work
+--- PAGE 4 ---
+Request Flow
+REQUEST FLOW
+1 User hits the public API Gateway URL in a browser or curl
+2 API Gateway pass the full request to the ALB DNS on port 80
+3 ALB round-robins the request to one of the 2 healthy EC2 instances in the target group
+4 EC2 instance (running a web server) serves the HTML page containing its own instance ID and AZ
+5 Response travels back through ALB → API Gateway → User · HTTP 200
+Tip — proving round-robin works
+Refresh the URL several times. The instance ID in the response should alternate between your two EC2 instances — that confirms the ALB, ASG,
+target group, and both servers are all wired up correctly.
+
+
+Before anything, write a claude.md for this project. for writing that
