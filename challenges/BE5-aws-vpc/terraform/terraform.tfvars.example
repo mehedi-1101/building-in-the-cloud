@@ -1,0 +1,18 @@
+aws_region = "ap-south-1"
+project    = "be5"
+owner      = "mh"
+
+# REQUIRED — your laptop's public IP. Find it: curl https://checkip.amazonaws.com
+my_ip = "103.195.205.20/32"
+
+# REQUIRED — name of the key pair that already exists in your AWS account
+key_name = "mh-key"
+
+# Optional overrides
+# az                  = "ap-south-1a"
+# instance_type       = "t3.micro"
+# vpc_cidr            = "10.0.0.0/16"
+# public_subnet_cidr  = "10.0.1.0/24"
+# private_subnet_cidr = "10.0.2.0/24"
+# vpc2_cidr           = "10.1.0.0/16"
+# vpc2_subnet_cidr    = "10.1.1.0/24"
