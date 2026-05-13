@@ -152,6 +152,22 @@ Resources:
         - Key: task
           Value: !Ref TaskTag
 
+  # ── CloudWatch Log Group: Step Functions ─────────────────────────────────
+  # Express workflows don't store execution history automatically — unlike Standard.
+  # Logging must be explicitly configured. Without it, executions leave no trace.
+  # RetentionInDays: 7 keeps costs near zero at lab scale.
+
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/states/mh-message-processor
+      RetentionInDays: 7
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
   # ── IAM Role: Step Functions ──────────────────────────────────────────────
   # AssumeRolePolicyDocument = trust policy (who can use this role).
   # Policies (inline) = permission policy (what they can do).
@@ -180,6 +196,17 @@ Resources:
               - Effect: Allow
                 Action: sns:Publish
                 Resource: !Ref BadMessagesTopic
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: '*'
       Tags:
         - Key: project
           Value: !Ref ProjectTag
@@ -200,6 +227,12 @@ Resources:
       StateMachineName: mh-message-processor
       StateMachineType: EXPRESS
       RoleArn: !GetAtt SFNRole.Arn
+      LoggingConfiguration:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
       DefinitionString: !Sub |
         {
           "Comment": "Process SQS batch: good messages to DynamoDB, bad messages to SNS",
