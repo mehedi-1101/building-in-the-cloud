@@ -198,7 +198,7 @@ Resources:
     Type: AWS::StepFunctions::StateMachine
     Properties:
       StateMachineName: mh-message-processor
-      StateMachineType: STANDARD
+      StateMachineType: EXPRESS
       RoleArn: !GetAtt SFNRole.Arn
       DefinitionString: !Sub |
         {
@@ -242,6 +242,14 @@ Resources:
                         "body": { "S.$": "States.JsonToString($.parsedBody)" }
                       }
                     },
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.All"],
+                        "MaxAttempts": 3,
+                        "IntervalSeconds": 2,
+                        "BackoffRate": 2
+                      }
+                    ],
                     "End": true
                   },
                   "SendBadMessageAlert": {
@@ -252,6 +260,14 @@ Resources:
                       "Subject": "Bad message received",
                       "Message.$": "States.Format('Bad message received.\nMessage ID: {}\nBody: {}', $.messageId, States.JsonToString($.parsedBody))"
                     },
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.All"],
+                        "MaxAttempts": 3,
+                        "IntervalSeconds": 2,
+                        "BackoffRate": 2
+                      }
+                    ],
                     "End": true
                   }
                 }
@@ -295,7 +311,7 @@ Resources:
                   - sqs:ChangeMessageVisibility
                 Resource: !GetAtt MessagesQueue.Arn
               - Effect: Allow
-                Action: states:StartExecution
+                Action: states:StartSyncExecution
                 Resource: !Ref StateMachine
       Tags:
         - Key: project
@@ -322,7 +338,7 @@ Resources:
       Target: !Ref StateMachine
       TargetParameters:
         StepFunctionStateMachineParameters:
-          InvocationType: FIRE_AND_FORGET
+          InvocationType: REQUEST_RESPONSE
       Tags:
         project: !Ref ProjectTag
         task: !Ref TaskTag
