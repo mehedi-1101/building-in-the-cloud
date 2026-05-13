@@ -1,0 +1,401 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'BE8 - Async events: SQS -> EventBridge Pipe -> Step Functions -> DynamoDB/SNS'
+
+# ── Parameters ────────────────────────────────────────────────────────────────
+# Anything that changes between deployments or environments goes here.
+# AdminEmail has no default — CF will require it at deploy time.
+# Tags have defaults so you only override them if needed.
+
+Parameters:
+  AdminEmail:
+    Type: String
+    Description: Email address for bad message notifications and DLQ alerts
+
+  ProjectTag:
+    Type: String
+    Default: be8-async-events
+
+  TaskTag:
+    Type: String
+    Default: be8
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+# Ordered by dependency — resources that others depend on come first.
+# CF resolves dependencies automatically via !Ref and !GetAtt, but explicit
+# ordering makes the template easier to read.
+
+Resources:
+
+  # ── DynamoDB ──────────────────────────────────────────────────────────────
+  # BillingMode PAY_PER_REQUEST = on-demand, no capacity planning needed.
+  # AttributeDefinitions only needs the key attributes — not all fields.
+  # DynamoDB is schemaless; non-key fields don't need to be declared here.
+
+  MessagesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: mh-messages
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── SNS: bad messages ─────────────────────────────────────────────────────
+  # !Ref on an SNS topic returns its ARN — used to wire the subscription.
+  # The subscription will be PENDING until the user confirms via email.
+  # CF does not block on confirmation — it creates the subscription and moves on.
+
+  BadMessagesTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: mh-bad-messages
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  BadMessagesSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref BadMessagesTopic
+      Protocol: email
+      Endpoint: !Ref AdminEmail
+
+  # ── SQS: Dead Letter Queue ────────────────────────────────────────────────
+  # Created before the primary queue because the primary queue references it
+  # via RedrivePolicy. !GetAtt MessagesDLQ.Arn would fail if DLQ didn't exist.
+
+  MessagesDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: mh-messages-dlq
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── SNS: DLQ alerts ───────────────────────────────────────────────────────
+
+  DLQAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: mh-dlq-alerts
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  DLQAlertsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref DLQAlertsTopic
+      Protocol: email
+      Endpoint: !Ref AdminEmail
+
+  # ── CloudWatch Alarm ──────────────────────────────────────────────────────
+  # !GetAtt MessagesDLQ.QueueName gets just the name (not the full ARN).
+  # CloudWatch dimensions use the queue name, not ARN — that's why .QueueName.
+  # CF automatically creates this after MessagesDLQ because of the !GetAtt.
+
+  DLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: mh-dlq-alarm
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt MessagesDLQ.QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: missing
+      AlarmActions:
+        - !Ref DLQAlertsTopic
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── SQS: Primary Queue ────────────────────────────────────────────────────
+  # MessageRetentionPeriod is in seconds: 345600 = 4 days.
+  # RedrivePolicy wires the DLQ: after 3 failed receives, message moves to DLQ.
+  # !GetAtt MessagesDLQ.Arn gets the ARN (not URL) which is what RedrivePolicy needs.
+
+  MessagesQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: mh-messages
+      VisibilityTimeout: 30
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt MessagesDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── CloudWatch Log Group: Step Functions ─────────────────────────────────
+  # Express workflows don't store execution history automatically — unlike Standard.
+  # Logging must be explicitly configured. Without it, executions leave no trace.
+  # RetentionInDays: 7 keeps costs near zero at lab scale.
+
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/states/mh-message-processor
+      RetentionInDays: 7
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── IAM Role: Step Functions ──────────────────────────────────────────────
+  # AssumeRolePolicyDocument = trust policy (who can use this role).
+  # Policies (inline) = permission policy (what they can do).
+  # Using !GetAtt and !Ref here means CF will automatically create this role
+  # after MessagesTable and BadMessagesTopic exist.
+
+  SFNRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mh-sfn-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: mh-sfn-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: dynamodb:PutItem
+                Resource: !GetAtt MessagesTable.Arn
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref BadMessagesTopic
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: '*'
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── Step Functions State Machine ──────────────────────────────────────────
+  # DefinitionString embeds the ASL as a JSON string.
+  # !Sub injects ${BadMessagesTopic} with the actual SNS topic ARN at deploy time.
+  # For SNS topics, !Ref returns the ARN — so this correctly produces
+  # "arn:aws:sns:ap-south-1:ACCOUNT_ID:mh-bad-messages" in the deployed JSON.
+  # All other $ references in the ASL ($.messageId etc.) are left untouched
+  # because !Sub only replaces ${...} patterns, not $. patterns.
+
+  StateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: mh-message-processor
+      StateMachineType: EXPRESS
+      RoleArn: !GetAtt SFNRole.Arn
+      LoggingConfiguration:
+        Level: ALL
+        IncludeExecutionData: true
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Process SQS batch: good messages to DynamoDB, bad messages to SNS",
+          "StartAt": "ProcessBatch",
+          "States": {
+            "ProcessBatch": {
+              "Type": "Map",
+              "ItemsPath": "$",
+              "MaxConcurrency": 0,
+              "Iterator": {
+                "StartAt": "ParseMessageBody",
+                "States": {
+                  "ParseMessageBody": {
+                    "Type": "Pass",
+                    "Parameters": {
+                      "messageId.$": "$.messageId",
+                      "parsedBody.$": "States.StringToJson($.body)"
+                    },
+                    "Next": "RouteMessage"
+                  },
+                  "RouteMessage": {
+                    "Type": "Choice",
+                    "Choices": [
+                      {
+                        "Variable": "$.parsedBody.type",
+                        "IsPresent": true,
+                        "Next": "SaveGoodMessage"
+                      }
+                    ],
+                    "Default": "SendBadMessageAlert"
+                  },
+                  "SaveGoodMessage": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::dynamodb:putItem",
+                    "Parameters": {
+                      "TableName": "mh-messages",
+                      "Item": {
+                        "id": { "S.$": "$.messageId" },
+                        "type": { "S.$": "$.parsedBody.type" },
+                        "body": { "S.$": "States.JsonToString($.parsedBody)" }
+                      }
+                    },
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.All"],
+                        "MaxAttempts": 3,
+                        "IntervalSeconds": 2,
+                        "BackoffRate": 2
+                      }
+                    ],
+                    "End": true
+                  },
+                  "SendBadMessageAlert": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::sns:publish",
+                    "Parameters": {
+                      "TopicArn": "${BadMessagesTopic}",
+                      "Subject": "Bad message received",
+                      "Message.$": "States.Format('Bad message received.\nMessage ID: {}\nBody: {}', $.messageId, States.JsonToString($.parsedBody))"
+                    },
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["States.All"],
+                        "MaxAttempts": 3,
+                        "IntervalSeconds": 2,
+                        "BackoffRate": 2
+                      }
+                    ],
+                    "End": true
+                  }
+                }
+              },
+              "End": true
+            }
+          }
+        }
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── IAM Role: EventBridge Pipe ────────────────────────────────────────────
+  # Trust policy uses pipes.amazonaws.com — not in the AWS service dropdown
+  # in the console, which is why we used a custom trust policy manually.
+  # Here in CF it's just another Principal value in the trust document.
+
+  PipeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mh-pipe-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pipes.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: mh-pipe-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt MessagesQueue.Arn
+              - Effect: Allow
+                Action: states:StartSyncExecution
+                Resource: !Ref StateMachine
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── EventBridge Pipe ──────────────────────────────────────────────────────
+  # Source needs the queue ARN — !GetAtt MessagesQueue.Arn.
+  # Target needs the state machine ARN — !Ref StateMachine (returns ARN for SFN).
+  # Note: AWS::Pipes::Pipe uses a flat Tags map (key: value), not the array
+  # format (- Key: / Value:) used by most other resource types.
+
+  SQSToSFNPipe:
+    Type: AWS::Pipes::Pipe
+    Properties:
+      Name: mh-sqs-to-sfn
+      RoleArn: !GetAtt PipeRole.Arn
+      Source: !GetAtt MessagesQueue.Arn
+      SourceParameters:
+        SqsQueueParameters:
+          BatchSize: 5
+          MaximumBatchingWindowInSeconds: 0
+      Target: !Ref StateMachine
+      TargetParameters:
+        StepFunctionStateMachineParameters:
+          InvocationType: REQUEST_RESPONSE
+      Tags:
+        project: !Ref ProjectTag
+        task: !Ref TaskTag
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+# Printed after deploy. Useful for testing — grab the queue URL to send messages.
+
+Outputs:
+  MessagesQueueURL:
+    Description: URL of the primary SQS queue — use this to send test messages
+    Value: !Ref MessagesQueue
+
+  MessagesQueueARN:
+    Description: ARN of the primary SQS queue
+    Value: !GetAtt MessagesQueue.Arn
+
+  DLQArn:
+    Description: ARN of the dead letter queue
+    Value: !GetAtt MessagesDLQ.Arn
+
+  StateMachineArn:
+    Description: ARN of the Step Functions state machine
+    Value: !Ref StateMachine
+
+  MessagesTableName:
+    Description: Name of the DynamoDB table
+    Value: !Ref MessagesTable
