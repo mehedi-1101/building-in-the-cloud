@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Message Sender</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --sage:        #7A9E7E;
+      --sage-dark:   #5F8264;
+      --sage-light:  #EDF4EA;
+      --sage-ring:   rgba(122, 158, 126, 0.18);
+      --bg:          #F2F5EF;
+      --card:        #FFFFFF;
+      --text-main:   #1A202C;
+      --text-sub:    #374151;
+      --text-muted:  #6B7280;
+      --border:      #C8D8C4;
+      --success-bg:  #F0F7EE;
+      --success-bd:  #B8D4B5;
+      --success-tx:  #3A6B3E;
+      --error-bg:    #FDF2F2;
+      --error-bd:    #F5C6C6;
+      --error-tx:    #8B2020;
+      --warn-bg:     #FFFBEB;
+      --warn-bd:     #F59E0B;
+      --warn-tx:     #92400E;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, sans-serif;
+      background: var(--bg);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: 14px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 4px 16px rgba(0,0,0,0.05);
+      padding: 2.25rem 2rem;
+      width: 100%;
+      max-width: 460px;
+    }
+
+    .card-header {
+      margin-bottom: 1.75rem;
+    }
+
+    .card-header h1 {
+      font-size: 1.2rem;
+      font-weight: 650;
+      color: var(--text-main);
+      letter-spacing: -0.01em;
+    }
+
+    .card-header p {
+      font-size: 0.82rem;
+      color: var(--text-sub);
+      margin-top: 0.3rem;
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin-bottom: 1.5rem;
+    }
+
+    .field {
+      margin-bottom: 1.1rem;
+    }
+
+    label {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.8rem;
+      font-weight: 550;
+      color: var(--text-sub);
+      margin-bottom: 0.4rem;
+      letter-spacing: 0.01em;
+      text-transform: uppercase;
+    }
+
+    .badge {
+      font-size: 0.65rem;
+      font-weight: 500;
+      background: var(--sage-light);
+      color: var(--sage-dark);
+      padding: 0.1rem 0.45rem;
+      border-radius: 99px;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    input, select {
+      width: 100%;
+      padding: 0.55rem 0.8rem;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.9rem;
+      color: var(--text-main);
+      background: #FAFCF9;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--sage);
+      box-shadow: 0 0 0 3px var(--sage-ring);
+      background: #fff;
+    }
+
+    .input-prefix-wrap {
+      position: relative;
+    }
+
+    .input-prefix-wrap .prefix {
+      position: absolute;
+      left: 0.8rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .input-prefix-wrap input {
+      padding-left: 1.75rem;
+    }
+
+    .select-wrap {
+      position: relative;
+    }
+
+    .select-wrap::after {
+      content: "";
+      position: absolute;
+      right: 0.85rem;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--text-muted);
+      pointer-events: none;
+    }
+
+    select { padding-right: 2rem; cursor: pointer; }
+
+    .type-hint {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.3rem;
+    }
+
+    .type-hint span {
+      color: var(--sage-dark);
+      font-weight: 500;
+    }
+
+    button {
+      width: 100%;
+      padding: 0.65rem 1rem;
+      background: var(--sage);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 550;
+      cursor: pointer;
+      margin-top: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      transition: background 0.15s, transform 0.1s;
+      letter-spacing: 0.01em;
+    }
+
+    button:hover:not(:disabled) {
+      background: var(--sage-dark);
+    }
+
+    button:active:not(:disabled) {
+      transform: scale(0.99);
+    }
+
+    button:disabled {
+      background: #AECBB1;
+      cursor: not-allowed;
+    }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,0.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      display: none;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .status {
+      margin-top: 1rem;
+      padding: 0.8rem 1rem;
+      border-radius: 8px;
+      font-size: 0.83rem;
+      line-height: 1.5;
+      display: none;
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+    .status.success {
+      background: var(--success-bg);
+      border: 1px solid var(--success-bd);
+      color: var(--success-tx);
+    }
+
+    .status.error {
+      background: var(--error-bg);
+      border: 1px solid var(--error-bd);
+      color: var(--error-tx);
+    }
+
+    .status.warning {
+      background: var(--warn-bg);
+      border: 1px solid var(--warn-bd);
+      color: var(--warn-tx);
+    }
+
+    .status .msg-id {
+      font-family: monospace;
+      font-size: 0.78rem;
+      margin-top: 0.3rem;
+      opacity: 0.8;
+      word-break: break-all;
+    }
+
+    .test-section {
+      margin-top: 1rem;
+      padding: 0.85rem 1rem;
+      border: 1.5px dashed var(--border);
+      border-radius: 8px;
+      background: #FAFAFA;
+    }
+
+    .test-label {
+      font-size: 0.72rem;
+      font-weight: 550;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      margin-bottom: 0.6rem;
+    }
+
+    .btn-broken {
+      width: 100%;
+      padding: 0.55rem 1rem;
+      background: #fff;
+      color: #92400E;
+      border: 1.5px solid #F59E0B;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 550;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      transition: background 0.15s;
+      margin-top: 0;
+    }
+
+    .btn-broken:hover:not(:disabled) { background: #FFFBEB; }
+    .btn-broken:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .footer {
+      margin-top: 1rem;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="card-header">
+      <h1>Send a Message</h1>
+      <p>Submits to the async processing pipeline via SQS.</p>
+    </div>
+    <div class="divider"></div>
+
+    <div class="field">
+      <label for="msgId">
+        Message ID
+        <span class="badge">auto</span>
+      </label>
+      <input type="text" id="msgId" placeholder="msg-xxxxxxxx" />
+    </div>
+
+    <div class="field">
+      <label for="type">Type</label>
+      <div class="select-wrap">
+        <select id="type">
+          <option value="order">order</option>
+          <option value="refund">refund</option>
+          <option value="">(none)</option>
+        </select>
+      </div>
+      <p class="type-hint">Select <span>(none)</span> to trigger the bad message path → SNS alert.</p>
+    </div>
+
+    <div class="field">
+      <label for="amount">Amount</label>
+      <div class="input-prefix-wrap">
+        <span class="prefix">$</span>
+        <input type="number" id="amount" step="0.01" min="0" placeholder="0.00" />
+      </div>
+    </div>
+
+    <button id="submitBtn" onclick="sendMessage()">
+      <span class="spinner" id="spinner"></span>
+      <span id="btnText">Send Message</span>
+    </button>
+
+    <div class="test-section">
+      <p class="test-label">Test paths</p>
+      <div class="field" style="margin-bottom: 0.75rem;">
+        <label for="brokenPayload">Broken payload</label>
+        <input type="text" id="brokenPayload" value="{ this is : broken json <<" />
+      </div>
+      <button class="btn-broken" id="brokenBtn" onclick="sendBroken()">
+        <span class="spinner" id="brokenSpinner"></span>
+        <span id="brokenBtnText">Send broken JSON → DLQ</span>
+      </button>
+    </div>
+
+    <div class="status" id="status"></div>
+  </div>
+
+  <p class="footer">BE6 · CloudFront → S3 → API Gateway → SQS</p>
+
+  <script>
+    const API_URL = "/api/messages";
+
+    function generateId() {
+      return "msg-" + Math.random().toString(36).slice(2, 10);
+    }
+
+    document.getElementById("msgId").value = generateId();
+
+    async function sendMessage() {
+      const id     = document.getElementById("msgId").value.trim();
+      const type   = document.getElementById("type").value;
+      const amount = document.getElementById("amount").value;
+      const btn    = document.getElementById("submitBtn");
+      const status = document.getElementById("status");
+
+      if (!id) { showStatus("Message ID is required.", "error"); return; }
+      if (amount === "" || isNaN(parseFloat(amount)) || parseFloat(amount) < 0) {
+        showStatus("Please enter a valid amount.", "error");
+        return;
+      }
+
+      const payload = { id, amount: parseFloat(amount) };
+      if (type) payload.type = type;
+
+      setLoading(true);
+      status.style.display = "none";
+
+      try {
+        const res  = await fetch(API_URL, {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify(payload)
+        });
+
+        const text = await res.text();
+
+        if (res.ok) {
+          const data  = JSON.parse(text);
+          const msgId = data?.SendMessageResponse?.SendMessageResult?.MessageId ?? "—";
+          showSuccess(msgId, !!type);
+          document.getElementById("msgId").value  = generateId();
+          document.getElementById("amount").value = "";
+        } else {
+          showStatus("Error " + res.status + ": " + text, "error");
+        }
+      } catch (err) {
+        showStatus("Network error: " + err.message, "error");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    async function sendBroken() {
+      const btn     = document.getElementById("brokenBtn");
+      const spinner = document.getElementById("brokenSpinner");
+      const btnText = document.getElementById("brokenBtnText");
+      const status  = document.getElementById("status");
+
+      btn.disabled          = true;
+      spinner.style.display = "block";
+      btnText.textContent   = "Sending…";
+      status.style.display  = "none";
+
+      const payload = document.getElementById("brokenPayload").value || "{ broken }";
+
+      try {
+        await fetch(API_URL, {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    payload
+        });
+        showStatus(
+          "Broken JSON sent. SQS accepted it — Step Functions will fail to parse it.<br>" +
+          "<span style='opacity:0.75'>Check DLQ in ~30s (after 3 SQS retries). CloudWatch alarm → SNS email if DLQ was empty.</span>",
+          "warning"
+        );
+      } catch (err) {
+        showStatus("Network error: " + err.message, "error");
+      } finally {
+        btn.disabled          = false;
+        spinner.style.display = "none";
+        btnText.textContent   = "Send broken JSON → DLQ";
+      }
+    }
+
+    function setLoading(on) {
+      const btn     = document.getElementById("submitBtn");
+      const spinner = document.getElementById("spinner");
+      const btnText = document.getElementById("btnText");
+      btn.disabled        = on;
+      spinner.style.display = on ? "block" : "none";
+      btnText.textContent   = on ? "Sending…" : "Send Message";
+    }
+
+    function showSuccess(msgId, isGood) {
+      const el = document.getElementById("status");
+      el.className   = "status success";
+      el.style.display = "block";
+      el.innerHTML   = (isGood
+        ? "✓ Message sent — will appear in DynamoDB shortly."
+        : "✓ Message sent — no type field, SNS alert will fire.")
+        + '<div class="msg-id">SQS ID: ' + msgId + "</div>";
+    }
+
+    function showStatus(msg, type) {
+      const el = document.getElementById("status");
+      el.innerHTML     = msg;
+      el.className     = "status " + type;
+      el.style.display = "block";
+    }
+  </script>
+</body>
+</html>
