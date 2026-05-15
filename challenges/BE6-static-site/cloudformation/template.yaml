@@ -1,0 +1,299 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'BE6 - Static site: S3 (private) + CloudFront (OAC) + REST API Gateway -> SQS'
+
+# ── Parameters ────────────────────────────────────────────────────────────────
+
+Parameters:
+  SQSQueueName:
+    Type: String
+    Default: mh-messages
+    Description: Name of the existing SQS queue (created by BE8 stack)
+
+  ProjectTag:
+    Type: String
+    Default: be6-static-site
+
+  TaskTag:
+    Type: String
+    Default: be6
+
+# ── Resources ─────────────────────────────────────────────────────────────────
+
+Resources:
+
+  # ── S3 Bucket ────────────────────────────────────────────────────────────
+  # Private bucket — block all public access.
+  # CloudFront reads from it via OAC (bucket policy below), not the website endpoint.
+  # No static website hosting needed — CloudFront serves files directly from the S3 REST API.
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: mh-be6-static-site
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── CloudFront Origin Access Control ─────────────────────────────────────
+  # OAC is the modern replacement for OAI (Origin Access Identity).
+  # SigningBehavior: always — CloudFront always signs requests to S3 with SigV4.
+  # The bucket policy below restricts access to only this OAC.
+
+  OAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: mh-be6-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ── CloudFront Distribution ───────────────────────────────────────────────
+  # Two origins:
+  #   S3Origin     — serves the static site (/*  default behavior)
+  #   ApiGWOrigin  — proxies API calls (/api/* behavior, no caching)
+  # Stage name "api" is intentional: CloudFront forwards /api/messages to API GW,
+  # which reads the first path segment as the stage name → must be "api".
+  # CachePolicyId 658327ea... — CachingOptimized (S3). 4135ea2d... — CachingDisabled (API).
+  # AllViewerExceptHostHeader (b689b0a8...) — forwards headers to API GW without Host,
+  # which would break TLS SNI if forwarded as the CloudFront domain.
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: ApiStage
+    Properties:
+      DistributionConfig:
+        Comment: mh-be6-distribution
+        Enabled: true
+        HttpVersion: http2
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_All
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt S3Bucket.RegionalDomainName
+            OriginAccessControlId: !Ref OAC
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: ApiGWOrigin
+            DomainName: !Sub '${RestApi}.execute-api.${AWS::Region}.amazonaws.com'
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: ApiGWOrigin
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: true
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          Compress: true
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── S3 Bucket Policy ──────────────────────────────────────────────────────
+  # Allows CloudFront to call s3:GetObject on all objects in the bucket.
+  # Condition locks it to this specific distribution via its ARN.
+  # ArnLike (not StringEquals) matches the partial ARN pattern AWS uses.
+  # Created after CloudFrontDistribution because it references !Ref CloudFrontDistribution.
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${S3Bucket.Arn}/*'
+            Condition:
+              ArnLike:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+  # ── IAM Role: API Gateway ─────────────────────────────────────────────────
+  # Trust policy: apigateway.amazonaws.com can assume this role.
+  # Permission: sqs:SendMessage on the mh-messages queue only — least privilege.
+  # API Gateway uses this role to sign and send requests to SQS on your behalf.
+
+  ApiGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mh-apigw-role-be6
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: mh-apigw-policy-be6
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${SQSQueueName}'
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── REST API ──────────────────────────────────────────────────────────────
+  # REST API (not HTTP API) — required for direct AWS service integrations.
+  # HTTP API only supports Lambda proxy and HTTP proxy integrations.
+  # REGIONAL endpoint — no global edge optimisation needed for a lab.
+
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: mh-be6-api
+      EndpointConfiguration:
+        Types: [REGIONAL]
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+  # ── /messages resource ────────────────────────────────────────────────────
+
+  MessagesResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: messages
+
+  # ── POST /messages ────────────────────────────────────────────────────────
+  # Integration type AWS = direct AWS service call (not Lambda, not HTTP proxy).
+  # Uri path format: arn:aws:apigateway:REGION:sqs:path/ACCOUNT_ID/QUEUE_NAME
+  # This sends directly to the queue URL — not to the root SQS endpoint.
+  # Content-Type override: SQS Query API requires application/x-www-form-urlencoded.
+  # Without it, SQS returns UnknownOperationException (can't parse the body).
+  # PassthroughBehavior NEVER: reject requests that don't match any mapping template.
+  # CORS: Access-Control-Allow-Origin on the integration response so browsers accept the reply.
+
+  PostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref MessagesResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:sqs:path/${AWS::AccountId}/${SQSQueueName}'
+        Credentials: !GetAtt ApiGatewayRole.Arn
+        RequestParameters:
+          integration.request.header.Content-Type: "'application/x-www-form-urlencoded'"
+        RequestTemplates:
+          application/json: 'Action=SendMessage&MessageBody=$util.urlEncode($input.body)'
+        PassthroughBehavior: NEVER
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # ── OPTIONS /messages (CORS preflight) ────────────────────────────────────
+  # Browsers send an OPTIONS preflight request before any cross-origin POST.
+  # This mock integration returns the CORS headers immediately without hitting SQS.
+  # Without this, the browser blocks the POST before it even leaves the tab.
+
+  OptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref MessagesResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # ── Deployment ────────────────────────────────────────────────────────────
+  # DependsOn both methods — CF resolves !Ref/!GetAtt dependencies automatically,
+  # but Deployment has no direct reference to the methods so we need explicit DependsOn.
+  # Without this, CF might deploy before the methods are created and the stage would be empty.
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - PostMethod
+      - OptionsMethod
+    Properties:
+      RestApiId: !Ref RestApi
+
+  # ── Stage ─────────────────────────────────────────────────────────────────
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref RestApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: api
+      Tags:
+        - Key: project
+          Value: !Ref ProjectTag
+        - Key: task
+          Value: !Ref TaskTag
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+
+Outputs:
+  CloudFrontURL:
+    Description: CloudFront URL — open this in your browser
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
+
+  ApiInvokeURL:
+    Description: API Gateway invoke URL (direct) — for reference only, not used in index.html
+    Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/api/messages'
+
+  S3BucketName:
+    Description: S3 bucket name — upload index.html here after stack is created
+    Value: !Ref S3Bucket
+
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID — needed to invalidate cache after updating index.html
+    Value: !Ref CloudFrontDistribution
